@@ -111,6 +111,10 @@ async function resolveListing(input) {
   // request Maps' public result payload directly; Search HTML can contain
   // unrelated preview links.
   if (resolvedUrl.pathname === '/search' && resolvedUrl.searchParams.has('q')) {
+    const kgmid = resolvedUrl.searchParams.get('kgmid');
+    if (kgmid) {
+      throw new Error('This share.google link opens a Google Search profile, not a unique Maps place. Paste the restaurant’s direct Google Maps link so the correct listing can be verified.');
+    }
     const mapsPage = (await get(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(resolvedUrl.searchParams.get('q'))}`)).text;
     const searchUrl = mapSearchUrlFromPage(mapsPage);
     if (!searchUrl) throw new Error('Google did not return a public Maps listing for this link.');
@@ -123,7 +127,12 @@ async function resolveListing(input) {
   // share.google links resolve to a Google Search result. Its q parameter is
   // enough to open the same public Maps listing without an API or API key.
   if (!previewUrl) {
-    const query = new URL(resolved.url).searchParams.get('q');
+    const resolvedParams = new URL(resolved.url).searchParams;
+    const query = resolvedParams.get('q');
+    const kgmid = resolvedParams.get('kgmid');
+    if (kgmid) {
+      throw new Error('This share.google link opens a Google Search profile, not a unique Maps place. Paste the restaurant’s direct Google Maps link so the correct listing can be verified.');
+    }
     if (!query) throw new Error('This Google link did not contain a public business listing.');
     mapsPage = (await get(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`)).text;
     previewUrl = previewUrlFromPage(mapsPage);

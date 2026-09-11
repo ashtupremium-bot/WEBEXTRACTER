@@ -42,7 +42,7 @@ function assertGoogleUrl(value) {
 }
 
 async function get(url) {
-  const response = await fetch(url, { headers: GOOGLE_HEADERS, redirect: 'follow', signal: AbortSignal.timeout(20000) });
+  const response = await fetch(url, { headers: GOOGLE_HEADERS, redirect: 'follow', cache: 'no-store', signal: AbortSignal.timeout(12000) });
   if (!response.ok) throw new Error('Google could not open this listing. Please try the link again.');
   return { url: response.url, text: await response.text() };
 }
@@ -57,7 +57,21 @@ function mapSearchUrlFromPage(html) {
   return match ? `https://www.google.com${match[1].replace(/&amp;/g, '&')}` : null;
 }
 
+function normalizedGoogleText(page) {
+  return page.replace(/\\u003d/g, '=').replace(/\\u0026/g, '&').replace(/\\\//g, '/').replace(/\\"/g, '"');
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function recordCompleteness(record) {
+  return [record.address, record.phones.length, record.rating, record.reviewCount, record.website]
+    .filter((value) => value !== null && value !== undefined && value !== '' && value !== 0).length;
+}
+
 function extractListing(page) {
+  const normalized = normalizedGoogleText(page);
   const placeMatch = page.match(/"(0x[0-9a-f]+:0x[0-9a-f]+)","((?:\\.|[^"\\])+)"/i);
   const name = placeMatch ? decodeGoogleString(placeMatch[2]) : null;
   const addressPattern = name ? new RegExp(`"${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')},\\s*([^\"]+)"`) : null;
@@ -66,22 +80,42 @@ function extractListing(page) {
   const ratingAndReviews = page.match(/"([\d,]+) reviews"[\s\S]{0,140}?\b([1-5](?:\.\d)?)\s*,\s*([\d,]+)\s*,/i);
   const reviewLabel = page.match(/"([\d,]+) reviews"/i);
   const ratingNearReview = reviewLabel && page.slice(reviewLabel.index, reviewLabel.index + 400).match(/,([1-5](?:\.\d)?),([\d,]+),/);
-  const phoneMatches = [...page.matchAll(/\[\["([^"\\]+)",\d+\],\["([^"\\]+)",\d+\]\]/g)]
+  const structuredPhones = [...page.matchAll(/\[\["([^"\\]+)",\d+\],\["([^"\\]+)",\d+\]\]/g)]
     .map((match) => decodeGoogleString(match[2]))
     .filter((phone) => /\d{5,}/.test(phone));
-  const phones = [...new Set(phoneMatches)];
+  const readablePhones = [...normalized.matchAll(/(?:\+\d{1,3}[ .-]?)?(?:\(?\d{2,5}\)?[ .-]){1,3}\d{3,5}(?:[ .-]\d{2,5})?/g)]
+    .map((match) => match[0].trim())
+    .filter((phone) => phone.replace(/\D/g, '').length >= 7 && /[+(). -]/.test(phone));
+  const phones = uniqueStrings([...structuredPhones, ...readablePhones]);
   const websiteMatch = page.match(/\["(https?:\\?\/\\?\/[^"\\]+)",null,null,"[^"]*"\][\s\S]{0,80}?\[7,2,\["https:\\?\/\\?\/www\.gstatic\.com[^\]]+"Website"/i);
-  const website = websiteMatch ? decodeGoogleString(websiteMatch[1]).replace(/\\\//g, '/') : null;
+  const nearbyWebsiteMatch = normalized.match(/(https?:\/\/[^"\s,\]\\]+)[\s\S]{0,180}?"Website"/i)
+    || normalized.match(/"Website"[\s\S]{0,180}?(https?:\/\/[^"\s,\]\\]+)/i);
+  const website = websiteMatch ? decodeGoogleString(websiteMatch[1]).replace(/\\\//g, '/') : (nearbyWebsiteMatch ? nearbyWebsiteMatch[1] : null);
+  const readableRating = normalized.match(/(?:rated\s*)?([1-5](?:\.\d)?)\s*(?:stars?|out of\s*5|\/\s*5)\b/i);
+  const readableReviews = normalized.match(/([\d,.]+)\s*(?:Google\s*)?reviews\b/i);
 
   if (!name) throw new Error('The public listing details were not available for this link.');
   return {
     name,
     address,
     phones,
-    rating: ratingAndReviews ? Number(ratingAndReviews[2]) : (ratingNearReview ? Number(ratingNearReview[1]) : null),
-    reviewCount: ratingAndReviews ? Number(ratingAndReviews[3].replace(/,/g, '')) : (reviewLabel ? Number(reviewLabel[1].replace(/,/g, '')) : null),
+    rating: ratingAndReviews ? Number(ratingAndReviews[2]) : (ratingNearReview ? Number(ratingNearReview[1]) : (readableRating ? Number(readableRating[1]) : null)),
+    reviewCount: ratingAndReviews ? Number(ratingAndReviews[3].replace(/,/g, '')) : (reviewLabel ? Number(reviewLabel[1].replace(/,/g, '')) : (readableReviews ? Number(readableReviews[1].replace(/[,.]/g, '')) : null)),
     website,
   };
+}
+
+async function extractWithFallback(url) {
+  const first = extractListing((await get(url)).text);
+  // Anonymous Google requests can return a partial payload. Retry once and
+  // retain whichever response contains the most public listing fields.
+  if (recordCompleteness(first) >= 4) return first;
+  try {
+    const retryUrl = new URL(url);
+    retryUrl.searchParams.set('_extractRetry', Date.now().toString());
+    const second = extractListing((await get(retryUrl)).text);
+    return recordCompleteness(second) > recordCompleteness(first) ? second : first;
+  } catch { return first; }
 }
 
 async function resolveListing(input) {
@@ -96,7 +130,7 @@ async function resolveListing(input) {
     const mapsPage = (await get(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(resolvedUrl.searchParams.get('q'))}`)).text;
     const searchUrl = mapSearchUrlFromPage(mapsPage);
     if (!searchUrl) throw new Error('Google did not return a public Maps listing for this link.');
-    return extractListing((await get(searchUrl)).text);
+    return extractWithFallback(searchUrl);
   }
 
   let mapsPage = resolved.text;
@@ -113,11 +147,11 @@ async function resolveListing(input) {
     // rendered page, it has the result data in its response body.
     if (!previewUrl) {
       const searchUrl = mapSearchUrlFromPage(mapsPage);
-      if (searchUrl) return extractListing((await get(searchUrl)).text);
+      if (searchUrl) return extractWithFallback(searchUrl);
     }
   }
   if (!previewUrl) throw new Error('Google did not return a public Maps listing for this link.');
-  return extractListing((await get(previewUrl)).text);
+  return extractWithFallback(previewUrl);
 }
 
 function serveStatic(req, res) {

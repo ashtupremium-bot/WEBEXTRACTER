@@ -1,0 +1,9 @@
+{
+  "name": "Business Data Extractor",
+  "short_name": "Data Extractor",
+  "description": "Extract public business details from Google Maps links.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F3F5F7",
+  "theme_color": "#146B4D"
+}

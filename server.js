@@ -12,11 +12,20 @@ const GOOGLE_HEADERS = {
   'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
   'accept-language': 'en-US,en;q=0.9',
 };
-const MIME_TYPES = { '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8' };
+const MIME_TYPES = { '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8' };
 
 function json(res, status, body) {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...securityHeaders() });
   res.end(JSON.stringify(body));
+}
+
+function securityHeaders() {
+  return {
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'referrer-policy': 'strict-origin-when-cross-origin',
+    'permissions-policy': 'geolocation=(), microphone=(), camera=()',
+  };
 }
 
 function decodeGoogleString(value) {
@@ -117,20 +126,30 @@ function serveStatic(req, res) {
   if (!filePath.startsWith(root + path.sep) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     res.writeHead(404); res.end('Not found'); return;
   }
-  res.writeHead(200, { 'content-type': MIME_TYPES[path.extname(filePath)] || 'application/octet-stream' });
+  res.writeHead(200, { 'content-type': MIME_TYPES[path.extname(filePath)] || 'application/octet-stream', ...securityHeaders() });
   fs.createReadStream(filePath).pipe(res);
 }
 
-http.createServer(async (req, res) => {
+async function requestHandler(req, res) {
   if (req.method === 'POST' && req.url === '/extract') {
     let body = '';
     req.on('data', (chunk) => { body += chunk; if (body.length > 10000) req.destroy(); });
     req.on('end', async () => {
-      try { json(res, 200, await resolveListing(JSON.parse(body).url)); }
+      try {
+        const payload = JSON.parse(body);
+        if (!payload || typeof payload.url !== 'string' || payload.url.length > 4096) throw new Error('Please enter a valid Google Maps or Business Profile link.');
+        json(res, 200, await resolveListing(payload.url));
+      }
       catch (error) { json(res, 400, { message: error.message || 'Unable to read this public listing.' }); }
     });
     return;
   }
   if (req.method === 'GET' || req.method === 'HEAD') return serveStatic(req, res);
   res.writeHead(405); res.end('Method not allowed');
-}).listen(port, () => console.log(`Business Data Extractor running at http://localhost:${port}`));
+}
+
+if (require.main === module) {
+  http.createServer(requestHandler).listen(port, () => console.log(`Business Data Extractor running at http://localhost:${port}`));
+}
+
+module.exports = { resolveListing };

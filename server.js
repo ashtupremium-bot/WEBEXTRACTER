@@ -62,6 +62,15 @@ function recordCompleteness(record) {
     .filter((value) => value !== null && value !== undefined && value !== '' && value !== 0).length;
 }
 
+function mapsLookupUrl(query, kgs) {
+  const url = new URL('https://www.google.com/maps/search/?api=1');
+  url.searchParams.set('query', query);
+  // Google includes this identity token in share.google redirects. It ties a
+  // non-unique name (for example, "George Restaurant") to its exact listing.
+  if (kgs) url.searchParams.set('kgs', kgs);
+  return url.toString();
+}
+
 function extractListing(page) {
   const placeMatch = page.match(/"(0x[0-9a-f]+:0x[0-9a-f]+)","((?:\\.|[^"\\])+)"/i);
   const name = placeMatch ? decodeGoogleString(placeMatch[2]) : null;
@@ -112,10 +121,9 @@ async function resolveListing(input) {
   // unrelated preview links.
   if (resolvedUrl.pathname === '/search' && resolvedUrl.searchParams.has('q')) {
     const kgmid = resolvedUrl.searchParams.get('kgmid');
-    if (kgmid) {
-      throw new Error('This share.google link opens a Google Search profile, not a unique Maps place. Paste the restaurant’s direct Google Maps link so the correct listing can be verified.');
-    }
-    const mapsPage = (await get(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(resolvedUrl.searchParams.get('q'))}`)).text;
+    const kgs = resolvedUrl.searchParams.get('kgs');
+    if (kgmid && !kgs) throw new Error('This Google Search profile does not include a Maps listing identifier. Paste the restaurant’s direct Google Maps link.');
+    const mapsPage = (await get(mapsLookupUrl(resolvedUrl.searchParams.get('q'), kgs))).text;
     const searchUrl = mapSearchUrlFromPage(mapsPage);
     if (!searchUrl) throw new Error('Google did not return a public Maps listing for this link.');
     return extractWithFallback(searchUrl);
@@ -130,11 +138,10 @@ async function resolveListing(input) {
     const resolvedParams = new URL(resolved.url).searchParams;
     const query = resolvedParams.get('q');
     const kgmid = resolvedParams.get('kgmid');
-    if (kgmid) {
-      throw new Error('This share.google link opens a Google Search profile, not a unique Maps place. Paste the restaurant’s direct Google Maps link so the correct listing can be verified.');
-    }
+    const kgs = resolvedParams.get('kgs');
+    if (kgmid && !kgs) throw new Error('This Google Search profile does not include a Maps listing identifier. Paste the restaurant’s direct Google Maps link.');
     if (!query) throw new Error('This Google link did not contain a public business listing.');
-    mapsPage = (await get(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`)).text;
+    mapsPage = (await get(mapsLookupUrl(query, kgs))).text;
     previewUrl = previewUrlFromPage(mapsPage);
     // Search result pages contain a public Maps search endpoint. Unlike the
     // rendered page, it has the result data in its response body.

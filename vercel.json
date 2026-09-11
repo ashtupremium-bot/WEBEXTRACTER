@@ -1,5 +1,12 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
   "rewrites": [
     { "source": "/extract", "destination": "/api/extract" }
-  ]
+  ],
+  "functions": {
+    "api/extract.mjs": {
+      "maxDuration": 30
+    }
+  }
 }

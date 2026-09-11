@@ -1,4 +1,6 @@
-const { resolveListing } = require('../server');
+import extractor from '../server.js';
+
+const { resolveListing } = extractor;
 
 function sendJson(res, status, body) {
   res.statusCode = status;
@@ -25,7 +27,7 @@ function readBody(req) {
   });
 }
 
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('allow', 'POST');
     sendJson(res, 405, { message: 'Method not allowed.' });
@@ -41,4 +43,4 @@ module.exports = async (req, res) => {
   } catch (error) {
     sendJson(res, 400, { message: error.message || 'Unable to read this public listing.' });
   }
-};
+}

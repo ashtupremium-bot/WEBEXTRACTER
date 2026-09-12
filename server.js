@@ -134,7 +134,17 @@ function extractFromPlaceInfo(info) {
     website = decodeGoogleString(info[7]);
   }
 
-  const uniquePhones = [...new Set(phones.map(decodeGoogleString).filter((p) => /\d{5,}/.test(p)))];
+  const rawPhones = phones.map(decodeGoogleString).filter((p) => /\d{5,}/.test(p));
+  const phoneMap = new Map();
+  for (const phone of rawPhones) {
+    const digits = phone.replace(/\D/g, '');
+    const key = digits.length >= 7 ? digits.slice(-10) : digits;
+    const existing = phoneMap.get(key);
+    if (!existing || (phone.includes('+') && !existing.includes('+')) || phone.length > existing.length) {
+      phoneMap.set(key, phone);
+    }
+  }
+  const uniquePhones = Array.from(phoneMap.values());
 
   if (!name && !address) return null;
 

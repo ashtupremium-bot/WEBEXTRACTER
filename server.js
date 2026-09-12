@@ -86,9 +86,9 @@ function mapSearchUrlFromPage(html) {
   return match ? `https://www.google.com${match[1].replace(/&amp;/g, '&')}` : null;
 }
 
-function mapsLookupUrl({ query, kgs, hl, gl }) {
-  const url = new URL('https://www.google.com/maps/search/?api=1');
-  url.searchParams.set('query', query);
+function mapsLookupUrl({ query, kgs, kgmid, hl, gl }) {
+  const url = new URL(`https://www.google.com/maps/search/${encodeURIComponent(query)}`);
+  if (kgmid) url.searchParams.set('kgmid', kgmid);
   if (kgs) url.searchParams.set('kgs', kgs);
   if (hl) url.searchParams.set('hl', hl);
   if (gl) url.searchParams.set('gl', gl);

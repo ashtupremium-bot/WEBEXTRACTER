@@ -193,10 +193,30 @@ function extractListingRegex(page) {
   const ratingAndReviews = page.match(/"([\d,]+) reviews"[\s\S]{0,140}?\b([1-5](?:\.\d)?)\s*,\s*([\d,]+)\s*,/i);
   const reviewLabel = page.match(/"([\d,]+) reviews"/i);
   const ratingNearReview = reviewLabel && page.slice(reviewLabel.index, reviewLabel.index + 400).match(/,([1-5](?:\.\d)?),([\d,]+),/);
-  const phoneMatches = [...page.matchAll(/\[\["([^"\\]+)",\d+\],\["([^"\\]+)",\d+\]\]/g)]
-    .map((match) => decodeGoogleString(match[2]))
-    .filter((phone) => /\d{5,}/.test(phone));
-  const phones = [...new Set(phoneMatches)];
+  const phoneMatches = [];
+  if (name) {
+    const nameIdx = page.indexOf(name);
+    const windowText = nameIdx !== -1 ? page.slice(Math.max(0, nameIdx - 500), nameIdx + 2000) : page;
+    const directMatches = [...windowText.matchAll(/\[\["([^"\\]+)",\d+\],\["([^"\\]+)",\d+\]\]/g)]
+      .map((match) => decodeGoogleString(match[2] || match[1]))
+      .filter((phone) => /\d{5,}/.test(phone));
+    phoneMatches.push(...directMatches);
+  } else {
+    const firstMatch = page.match(/\[\["([^"\\]+)",\d+\],\["([^"\\]+)",\d+\]\]/);
+    if (firstMatch) phoneMatches.push(decodeGoogleString(firstMatch[2] || firstMatch[1]));
+  }
+
+  const rawPhones = phoneMatches.map(decodeGoogleString).filter((p) => /\d{5,}/.test(p));
+  const phoneMap = new Map();
+  for (const phone of rawPhones) {
+    const digits = phone.replace(/\D/g, '');
+    const key = digits.length >= 7 ? digits.slice(-10) : digits;
+    const existing = phoneMap.get(key);
+    if (!existing || (phone.includes('+') && !existing.includes('+')) || phone.length > existing.length) {
+      phoneMap.set(key, phone);
+    }
+  }
+  const phones = Array.from(phoneMap.values());
   const websiteMatch = page.match(/\["(https?:\\?\/\\?\/[^"\\]+)",null,null,"[^"]*"\][\s\S]{0,80}?\[7,2,\["https:\\?\/\\?\/www\.gstatic\.com[^\]]+"Website"/i);
   const website = websiteMatch ? decodeGoogleString(websiteMatch[1]).replace(/\\\//g, '/') : null;
 
@@ -224,8 +244,13 @@ function extractListing(page) {
 }
 
 function recordCompleteness(record) {
-  return [record.address, record.phones.length, record.rating, record.reviewCount, record.website]
-    .filter((value) => value !== null && value !== undefined && value !== '' && value !== 0).length;
+  if (!record) return 0;
+  return (record.name ? 1 : 0) +
+    (record.address ? 1 : 0) +
+    (record.phones && record.phones.length > 0 ? 1 : 0) +
+    (record.rating !== null && record.rating !== undefined ? 1 : 0) +
+    (record.reviewCount !== null && record.reviewCount !== undefined ? 1 : 0) +
+    (record.website ? 1 : 0);
 }
 
 async function extractWithFallback(url, headers = {}) {

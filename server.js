@@ -12,10 +12,19 @@ const GOOGLE_HEADERS = {
   'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
   'accept-language': 'en-US,en;q=0.9',
 };
-const MIME_TYPES = { '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8' };
+const MIME_TYPES = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8'
+};
 
 function json(res, status, body) {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...securityHeaders() });
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    ...securityHeaders()
+  });
   res.end(JSON.stringify(body));
 }
 
@@ -32,17 +41,37 @@ function decodeGoogleString(value) {
   try { return JSON.parse(`"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`); } catch { return value; }
 }
 
+function parseGoogleJson(text) {
+  try {
+    const cleaned = text.replace(/^\)\]\}'\s*/, '');
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
+
 function assertGoogleUrl(value) {
   let parsed;
   try { parsed = new URL(value); } catch { throw new Error('Please enter a valid Google Maps or Business Profile link.'); }
   const host = parsed.hostname.toLowerCase();
-  const isGoogle = host === 'share.google' || host.endsWith('.share.google') || host === 'goo.gl' || host.endsWith('.goo.gl') || host === 'g.page' || host.endsWith('.g.page') || host === 'g.co' || host.endsWith('.g.co') || host === 'maps.app.goo.gl' || host.endsWith('.google.com');
-  if (!isGoogle || !['http:', 'https:'].includes(parsed.protocol)) throw new Error('Please enter a Google Maps or Business Profile link.');
+  const isGoogle = host === 'share.google' || host.endsWith('.share.google') ||
+    host === 'goo.gl' || host.endsWith('.goo.gl') ||
+    host === 'g.page' || host.endsWith('.g.page') ||
+    host === 'g.co' || host.endsWith('.g.co') ||
+    host === 'maps.app.goo.gl' || host.endsWith('.google.com');
+  if (!isGoogle || !['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('Please enter a Google Maps or Business Profile link.');
+  }
   return parsed;
 }
 
-async function get(url) {
-  const response = await fetch(url, { headers: GOOGLE_HEADERS, redirect: 'follow', cache: 'no-store', signal: AbortSignal.timeout(12000) });
+async function get(url, extraHeaders = {}) {
+  const response = await fetch(url, {
+    headers: { ...GOOGLE_HEADERS, ...extraHeaders },
+    redirect: 'follow',
+    cache: 'no-store',
+    signal: AbortSignal.timeout(12000)
+  });
   if (!response.ok) throw new Error('Google could not open this listing. Please try the link again.');
   return { url: response.url, text: await response.text() };
 }
@@ -53,28 +82,102 @@ function previewUrlFromPage(html) {
 }
 
 function mapSearchUrlFromPage(html) {
-  const match = html.match(/<link href="([^\"]*\/search\?tbm=map[^\"]*)/i);
+  const match = html.match(/<link href="([^"]*\/search\?tbm=map[^"]*)/i);
   return match ? `https://www.google.com${match[1].replace(/&amp;/g, '&')}` : null;
 }
 
-function recordCompleteness(record) {
-  return [record.address, record.phones.length, record.rating, record.reviewCount, record.website]
-    .filter((value) => value !== null && value !== undefined && value !== '' && value !== 0).length;
-}
-
-function mapsLookupUrl(query, kgs) {
+function mapsLookupUrl({ query, kgs, hl, gl }) {
   const url = new URL('https://www.google.com/maps/search/?api=1');
   url.searchParams.set('query', query);
-  // Google includes this identity token in share.google redirects. It ties a
-  // non-unique name (for example, "George Restaurant") to its exact listing.
   if (kgs) url.searchParams.set('kgs', kgs);
+  if (hl) url.searchParams.set('hl', hl);
+  if (gl) url.searchParams.set('gl', gl);
   return url.toString();
 }
 
-function extractListing(page) {
+function extractFromPlaceInfo(info) {
+  if (!info || !Array.isArray(info)) return null;
+
+  const name = (info[11] && typeof info[11] === 'string') ? decodeGoogleString(info[11]) : null;
+  const address = info[18] ? decodeGoogleString(info[18]) : (info[2] && Array.isArray(info[2]) ? info[2].map(decodeGoogleString).join(', ') : null);
+
+  let rating = null;
+  let reviewCount = null;
+  if (info[4] && Array.isArray(info[4])) {
+    const rArr = info[4];
+    if (typeof rArr[7] === 'number') rating = rArr[7];
+    if (typeof rArr[8] === 'number') reviewCount = rArr[8];
+    if (reviewCount === null && rArr[3] && typeof rArr[3][1] === 'string') {
+      const m = rArr[3][1].match(/([\d,]+)/);
+      if (m) reviewCount = Number(m[1].replace(/,/g, ''));
+    }
+  }
+
+  const phones = [];
+  if (info[178] && Array.isArray(info[178])) {
+    for (const p of info[178]) {
+      if (Array.isArray(p)) {
+        if (p[0] && typeof p[0] === 'string') phones.push(p[0]);
+        if (p[1] && Array.isArray(p[1])) {
+          for (const sub of p[1]) {
+            if (Array.isArray(sub) && typeof sub[0] === 'string') phones.push(sub[0]);
+          }
+        }
+      }
+    }
+  }
+
+  let website = null;
+  if (info[7] && Array.isArray(info[7]) && typeof info[7][0] === 'string') {
+    website = decodeGoogleString(info[7][0]);
+  } else if (typeof info[7] === 'string') {
+    website = decodeGoogleString(info[7]);
+  }
+
+  const uniquePhones = [...new Set(phones.map(decodeGoogleString).filter((p) => /\d{5,}/.test(p)))];
+
+  if (!name && !address) return null;
+
+  return {
+    name,
+    address,
+    phones: uniquePhones,
+    rating,
+    reviewCount,
+    website,
+    placeId: (info[78] && typeof info[78] === 'string') ? info[78] : null,
+    hexId: (info[10] && typeof info[10] === 'string') ? info[10] : null,
+    _placeUrl: info[42] || null,
+  };
+}
+
+function extractFromJsonPayload(json) {
+  if (!json || !Array.isArray(json)) return null;
+
+  // Place preview response
+  if (json[6] && Array.isArray(json[6])) {
+    const res = extractFromPlaceInfo(json[6]);
+    if (res && res.name) return res;
+  }
+
+  // Search results response
+  if (json[0] && Array.isArray(json[0]) && Array.isArray(json[0][1])) {
+    const results = json[0][1];
+    for (const item of results) {
+      if (item && Array.isArray(item) && item[14]) {
+        const res = extractFromPlaceInfo(item[14]);
+        if (res && res.name) return res;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractListingRegex(page) {
   const placeMatch = page.match(/"(0x[0-9a-f]+:0x[0-9a-f]+)","((?:\\.|[^"\\])+)"/i);
   const name = placeMatch ? decodeGoogleString(placeMatch[2]) : null;
-  const addressPattern = name ? new RegExp(`"${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')},\\s*([^\"]+)"`) : null;
+  const addressPattern = name ? new RegExp(`"${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')},\\s*([^"]+)"`) : null;
   const addressMatch = addressPattern && page.match(addressPattern);
   const address = addressMatch ? `${name}, ${decodeGoogleString(addressMatch[1])}` : null;
   const ratingAndReviews = page.match(/"([\d,]+) reviews"[\s\S]{0,140}?\b([1-5](?:\.\d)?)\s*,\s*([\d,]+)\s*,/i);
@@ -95,18 +198,52 @@ function extractListing(page) {
     rating: ratingAndReviews ? Number(ratingAndReviews[2]) : (ratingNearReview ? Number(ratingNearReview[1]) : null),
     reviewCount: ratingAndReviews ? Number(ratingAndReviews[3].replace(/,/g, '')) : (reviewLabel ? Number(reviewLabel[1].replace(/,/g, '')) : null),
     website,
+    hexId: placeMatch ? placeMatch[1] : null,
   };
 }
 
-async function extractWithFallback(url) {
-  const first = extractListing((await get(url)).text);
-  // Anonymous Google requests can return a partial payload. Retry once and
-  // retain whichever response contains the most public listing fields.
+function extractListing(page) {
+  const json = parseGoogleJson(page);
+  if (json) {
+    const extracted = extractFromJsonPayload(json);
+    if (extracted && extracted.name) {
+      return extracted;
+    }
+  }
+  return extractListingRegex(page);
+}
+
+function recordCompleteness(record) {
+  return [record.address, record.phones.length, record.rating, record.reviewCount, record.website]
+    .filter((value) => value !== null && value !== undefined && value !== '' && value !== 0).length;
+}
+
+async function extractWithFallback(url, headers = {}) {
+  let first = extractListing((await get(url, headers)).text);
+  
+  // If placeId or hexId is present and ratings/reviews are missing, fetch exact place details
+  if (first && (first.placeId || first.hexId) && (first.rating === null || first.reviewCount === null || !first.address)) {
+    try {
+      const placeQueryUrl = first.placeId
+        ? `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(first.placeId)}`
+        : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(first.name || '')}&query_place_id=${encodeURIComponent(first.hexId)}`;
+      const pPage = (await get(placeQueryUrl, headers)).text;
+      const subPreviewUrl = previewUrlFromPage(pPage);
+      if (subPreviewUrl) {
+        const detailed = extractListing((await get(subPreviewUrl, headers)).text);
+        if (detailed && detailed.name && recordCompleteness(detailed) >= recordCompleteness(first)) {
+          first = detailed;
+        }
+      }
+    } catch {}
+  }
+
   if (recordCompleteness(first) >= 4) return first;
+
   try {
     const retryUrl = new URL(url);
     retryUrl.searchParams.set('_extractRetry', Date.now().toString());
-    const second = extractListing((await get(retryUrl)).text);
+    const second = extractListing((await get(retryUrl, headers)).text);
     return recordCompleteness(second) > recordCompleteness(first) ? second : first;
   } catch { return first; }
 }
@@ -116,42 +253,53 @@ async function resolveListing(input) {
   const resolved = await get(input);
   const resolvedUrl = new URL(resolved.url);
 
-  // Google Share links land on a Search result. Use that result's query to
-  // request Maps' public result payload directly; Search HTML can contain
-  // unrelated preview links.
-  if (resolvedUrl.pathname === '/search' && resolvedUrl.searchParams.has('q')) {
-    const kgmid = resolvedUrl.searchParams.get('kgmid');
-    const kgs = resolvedUrl.searchParams.get('kgs');
-    if (kgmid && !kgs) throw new Error('This Google Search profile does not include a Maps listing identifier. Paste the restaurant’s direct Google Maps link.');
-    const mapsPage = (await get(mapsLookupUrl(resolvedUrl.searchParams.get('q'), kgs))).text;
-    const searchUrl = mapSearchUrlFromPage(mapsPage);
-    if (!searchUrl) throw new Error('Google did not return a public Maps listing for this link.');
-    return extractWithFallback(searchUrl);
+  let hl = resolvedUrl.searchParams.get('hl');
+  let gl = resolvedUrl.searchParams.get('gl');
+  if (!gl && hl && hl.includes('-')) {
+    gl = hl.split('-')[1].toLowerCase();
   }
+
+  const kgmid = resolvedUrl.searchParams.get('kgmid');
+  const kgs = resolvedUrl.searchParams.get('kgs');
+  const query = resolvedUrl.searchParams.get('q');
+
+  const reqHeaders = {};
+  if (hl) reqHeaders['accept-language'] = `${hl},en;q=0.9`;
 
   let mapsPage = resolved.text;
   let previewUrl = previewUrlFromPage(mapsPage);
+  let searchUrl = mapSearchUrlFromPage(mapsPage);
 
-  // share.google links resolve to a Google Search result. Its q parameter is
-  // enough to open the same public Maps listing without an API or API key.
-  if (!previewUrl) {
-    const resolvedParams = new URL(resolved.url).searchParams;
-    const query = resolvedParams.get('q');
-    const kgmid = resolvedParams.get('kgmid');
-    const kgs = resolvedParams.get('kgs');
-    if (kgmid && !kgs) throw new Error('This Google Search profile does not include a Maps listing identifier. Paste the restaurant’s direct Google Maps link.');
-    if (!query) throw new Error('This Google link did not contain a public business listing.');
-    mapsPage = (await get(mapsLookupUrl(query, kgs))).text;
+  // If redirected to Google Search, use Maps lookup with query, kgmid, locale
+  if (resolvedUrl.pathname === '/search' && query) {
+    const lookup = mapsLookupUrl({ query, kgs, kgmid, hl, gl });
+    mapsPage = (await get(lookup, reqHeaders)).text;
     previewUrl = previewUrlFromPage(mapsPage);
-    // Search result pages contain a public Maps search endpoint. Unlike the
-    // rendered page, it has the result data in its response body.
-    if (!previewUrl) {
-      const searchUrl = mapSearchUrlFromPage(mapsPage);
-      if (searchUrl) return extractWithFallback(searchUrl);
-    }
+    searchUrl = mapSearchUrlFromPage(mapsPage);
   }
-  if (!previewUrl) throw new Error('Google did not return a public Maps listing for this link.');
-  return extractWithFallback(previewUrl);
+
+  if (!previewUrl && !searchUrl && query) {
+    const lookup = mapsLookupUrl({ query, kgs, kgmid, hl, gl });
+    mapsPage = (await get(lookup, reqHeaders)).text;
+    previewUrl = previewUrlFromPage(mapsPage);
+    searchUrl = mapSearchUrlFromPage(mapsPage);
+  }
+
+  let finalListing = null;
+  if (previewUrl) {
+    finalListing = await extractWithFallback(previewUrl, reqHeaders);
+  } else if (searchUrl) {
+    finalListing = await extractWithFallback(searchUrl, reqHeaders);
+  }
+
+  if (!finalListing || !finalListing.name) {
+    throw new Error('Google did not return a public Maps listing for this link.');
+  }
+
+  delete finalListing._placeUrl;
+  delete finalListing.placeId;
+  delete finalListing.hexId;
+  return finalListing;
 }
 
 function serveStatic(req, res) {
